@@ -1,6 +1,6 @@
 # cool-apps-refresh
 
-AI-powered terminal cheat sheet that shows up when you open a new shell. Scans your apt history and zsh history, then uses an AI CLI to generate a compact reminder of the interesting tools you've installed but might forget about.
+AI-powered terminal cheat sheet that shows up when you open a new shell. Scans your package manager history and shell history, then uses an AI CLI to generate a compact reminder of the interesting tools you've installed but might forget about.
 
 ```
 ── KUBERNETES ────────────────────────────────────────
@@ -28,9 +28,25 @@ Tools marked with ⚡ haven't appeared in your recent shell history.
 
 ## Requirements
 
-- Debian/Ubuntu (reads `/var/log/apt/history.log`)
+- Python 3.8+
 - zsh (reads `~/.zsh_history`)
-- One of the supported AI backends (see below)
+- At least one supported package manager (see below)
+- One of the supported AI backends (see AI backends)
+
+## Package managers
+
+History is collected from whichever of these are present — all are optional:
+
+| Package manager | Source | Distro / OS |
+|-----------------|--------|-------------|
+| apt | `/var/log/apt/history.log` (+ `.gz` rotations) | Debian, Ubuntu |
+| pacman | `/var/log/pacman.log` | Arch Linux |
+| dnf | `/var/log/dnf.rpm.log` | Fedora, RHEL 8+ |
+| yum | `/var/log/yum.log` | CentOS, RHEL 7 |
+| zypper | `/var/log/zypp/history` | openSUSE |
+| snap | `snap list` | cross-distro |
+| flatpak | `flatpak list` | cross-distro |
+| brew | `brew list` | macOS, Linux |
 
 ## AI backends
 
@@ -50,13 +66,15 @@ Auto-detection tries them in this order, using the first one found:
 curl -fsSL https://raw.githubusercontent.com/talpah/cool-apps-refresh/main/setup.sh | sh
 ```
 
-The script is idempotent — safe to re-run. It will:
+The installer asks for confirmation before each step. It will offer to:
 
 1. Install `cool-apps-refresh` to `~/.local/bin/`
 2. Create `~/.config/cool-apps/exclude` and `config` (skips if already present)
-3. Enable a weekly systemd user timer for auto-refresh
-4. Inject the shell snippet into `~/.zshrc` (before p10k instant prompt if present)
+3. Enable a weekly systemd user timer (or cron job as fallback)
+4. Inject the shell snippet into your rc file (zsh, bash, fish, ksh supported)
 5. Generate the first cheat sheet
+
+The script is idempotent — safe to re-run.
 
 ### Manual install
 
@@ -75,7 +93,8 @@ cp exclude.example ~/.config/cool-apps/exclude
 # 3. Optional: AI backend config
 cp config.example ~/.config/cool-apps/config
 
-# 4. Add to ~/.zshrc BEFORE the p10k instant prompt block
+# 4. Add to your shell rc file BEFORE the p10k instant prompt block (zsh)
+#    or anywhere in .bashrc / config.fish
 () {
   local cache="$HOME/.cache/cool-apps-motd.txt"
   local stamp="$HOME/.cache/cool-apps-shown-date"
@@ -141,12 +160,12 @@ ffmpeg
 
 ## How it works
 
-1. Parses `/var/log/apt/history.log` (+ rotated `.gz` files) for manually-installed packages
+1. Collects installed packages from all detected package managers (apt, pacman, dnf, zypper, snap, flatpak, brew)
 2. Parses `~/.zsh_history` for recently-used binaries
 3. Filters out library packages, system packages, and your exclusion list
-4. Pipes the data to your AI backend to generate a categorised cheat sheet
+4. Pipes the merged data to your AI backend to generate a categorised cheat sheet
 5. Caches the result to `~/.cache/cool-apps-motd.txt`
-6. The zshrc snippet displays it once per day on new terminals
+6. The shell snippet displays it once per day when you open a new terminal
 
 ## License
 
