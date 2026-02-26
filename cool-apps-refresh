@@ -5,9 +5,10 @@ Reads package manager history + shell history and generates a compact reminder o
 interesting tools you've installed but might forget about.
 
 Usage:
-    cool-apps-refresh               # regenerate (auto-detects AI backend)
-    cool-apps-refresh -r/--refresh  # same
-    cool-apps-refresh -p/--print    # print cached version
+    cool-apps-refresh               # print cached cheat sheet (generate on first run)
+    cool-apps-refresh -r/--refresh  # force regenerate
+    cool-apps-refresh -p/--print    # print cached version (no auto-generate)
+    cool-apps-refresh -u/--update   # update this script from GitHub
     cool-apps-refresh --ai claude   # use a specific backend
     cool-apps-refresh --ai llm
     cool-apps-refresh --ai sgpt
@@ -22,13 +23,18 @@ Config: ~/.config/cool-apps/config
 """
 
 import gzip
+import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import urllib.request
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
+SCRIPT_URL = "https://raw.githubusercontent.com/talpah/cool-apps-refresh/main/cool-apps-refresh"
 CACHE_FILE = Path.home() / ".cache" / "cool-apps-motd.txt"
 EXCLUDE_FILE = Path.home() / ".config" / "cool-apps" / "exclude"
 AI_CONFIG_FILE = Path.home() / ".config" / "cool-apps" / "config"
@@ -96,6 +102,7 @@ def load_exclusions() -> frozenset[str]:
         if line and not line.startswith("#"):
             names.add(line)
     return frozenset(names)
+
 
 # Prefixes that are almost never interesting terminal tools
 SKIP_PREFIXES = (
@@ -339,9 +346,9 @@ def parse_shell_history(tail: int = 400) -> list[str]:
     return commands[-tail:]
 
 
-def unique_binaries(commands: list[str], exclusions: frozenset[str]) -> list[str]:
-    """Extract sorted unique binary names from a list of shell commands."""
-    names: set[str] = set()
+def unique_binaries(commands: list[str], exclusions: frozenset[str]) -> dict[str, int]:
+    """Extract binary names from shell commands with usage counts, sorted by frequency."""
+    counts: Counter[str] = Counter()
     for cmd in commands:
         for part in re.split(r"[|;&(]", cmd):
             part = part.strip()
@@ -353,14 +360,15 @@ def unique_binaries(commands: list[str], exclusions: frozenset[str]) -> list[str
             binary = tokens[0].split("/")[-1].lstrip("$")
             if binary and not binary.startswith("-") and binary.isidentifier():
                 if binary not in exclusions:
-                    names.add(binary)
-    return sorted(names)
+                    counts[binary] += 1
+    return dict(counts.most_common())
 
 
-def build_prompt(packages: list[dict], binaries: list[str], recent: list[str],
+def build_prompt(packages: list[dict], binaries: dict[str, int], recent: list[str],
                  max_lines: int = 45) -> str:
     pkg_text = "\n".join(f"  {p['date']}  {p['package']}" for p in packages[:100])
-    bin_text = ", ".join(binaries[:120])
+    bin_items = list(binaries.items())[:120]
+    bin_text = ", ".join(f"{name}({count})" for name, count in bin_items)
     recent_text = "\n".join(f"  {c}" for c in recent[-60:])
 
     return f"""I need a reminder cheat sheet of cool terminal tools I've installed but might forget.
@@ -368,7 +376,7 @@ def build_prompt(packages: list[dict], binaries: list[str], recent: list[str],
 INSTALLED PACKAGES (newest first, across all package managers):
 {pkg_text}
 
-UNIQUE BINARIES FROM MY RECENT SHELL HISTORY:
+BINARY USAGE COUNTS FROM MY RECENT SHELL HISTORY (name(count), sorted by frequency):
 {bin_text}
 
 RECENT SHELL HISTORY SAMPLE (last 60 commands):
@@ -377,7 +385,7 @@ RECENT SHELL HISTORY SAMPLE (last 60 commands):
 Generate a compact cheat sheet. Requirements:
 - Skip obvious daily-driver tools (git, vim, python, ssh, curl, grep, docker, ls, cat, etc.)
 - For each tool: name + one-sentence description + ONE killer example command
-- If the tool hasn't been used recently, prefix the example command with ⚡ (no other annotation)
+- If the tool has a low usage count (<=2) or doesn't appear in the binary counts, prefix the example command with ⚡ (no other annotation)
 - Group into 3-5 categories with ASCII dividers
 - Max {max_lines} lines total, no markdown, terminal-friendly plain text
 - No title, no surrounding box — just the category sections
@@ -395,8 +403,6 @@ Example format (note: non-⚡ lines use 3 spaces to align with "⚡ "):
 
 def call_ai(prompt: str, backend: str = "auto", custom_cmd: str = "") -> str:
     """Invoke an AI CLI with the prompt via stdin, return the response."""
-    import os
-
     env = os.environ.copy()
 
     if backend == "auto":
@@ -465,6 +471,8 @@ def fix_alignment(text: str) -> str:
     bolt_pat  = re.compile(r"^( {2,4})(\S+)\s+(.+?)\s*⚡\s*(.+)$")
     # plain lines: desc and cmd separated by 2+ spaces
     plain_pat = re.compile(r"^( {2,4})(\S+)\s{2,}(.+?)\s{2,}(.+)$")
+    # section dividers should always have 2-space indent
+    header_pat = re.compile(r"^( *)──")
 
     parsed = []
     for line in text.splitlines():
@@ -478,6 +486,9 @@ def fix_alignment(text: str) -> str:
             indent, name, desc, cmd = m.groups()
             parsed.append((True, indent, name, desc.strip(), False, cmd.strip()))
             continue
+        h = header_pat.match(line)
+        if h and h.group(1) != "  ":
+            line = "  " + line.lstrip()
         parsed.append((False, line))
 
     tool_rows = [p for p in parsed if p[0]]
@@ -500,29 +511,33 @@ def fix_alignment(text: str) -> str:
     return "\n".join(out)
 
 
-def main() -> None:
-    argv = sys.argv[1:]
-
-    if "--print" in argv or "-p" in argv:
-        if CACHE_FILE.exists():
-            print(CACHE_FILE.read_text())
-        else:
-            print("No cached cheat sheet yet. Run: cool-apps-refresh", file=sys.stderr)
-        return
-
-    # --ai <backend> overrides config
-    ai_cfg = load_ai_config()
-    backend = ai_cfg.get("AI", "auto")
-    custom_cmd = ai_cfg.get("AI_CMD", "")
+def self_update() -> None:
+    """Download the latest script from GitHub and replace this binary."""
+    target = Path(sys.argv[0]).resolve()
+    print(f"→ Fetching latest from {SCRIPT_URL} ...", file=sys.stderr)
     try:
-        max_lines = int(ai_cfg.get("MAX_LINES", "45"))
-    except ValueError:
-        max_lines = 45
-    if "--ai" in argv:
-        idx = argv.index("--ai")
-        if idx + 1 < len(argv):
-            backend = argv[idx + 1]
+        with urllib.request.urlopen(SCRIPT_URL, timeout=15) as resp:  # noqa: S310
+            content = resp.read()
+    except Exception as exc:
+        print(f"Error: download failed — {exc}", file=sys.stderr)
+        sys.exit(1)
 
+    fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=".cool-apps-update-")
+    try:
+        os.write(fd, content)
+        os.close(fd)
+        os.chmod(tmp, target.stat().st_mode)
+        os.replace(tmp, target)
+    except Exception as exc:
+        os.unlink(tmp)
+        print(f"Error: could not replace {target} — {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"✓ Updated {target}", file=sys.stderr)
+
+
+def _do_refresh(backend: str, custom_cmd: str, max_lines: int) -> None:
+    """Run the full AI refresh pipeline and write the cache."""
     exclusions = load_exclusions()
 
     print("→ Parsing package manager history...", file=sys.stderr)
@@ -546,13 +561,60 @@ def main() -> None:
     body = fix_alignment(body.strip())
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    output = f"\n{body}\n\n  ↻ updated {now} · run cool-apps-refresh to regenerate\n"
+    output = f"\n{body}\n\n  ↻ updated {now} · run cool-apps-refresh --refresh to regenerate\n"
 
     CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
     CACHE_FILE.write_text(output)
 
     print(f"→ Written to {CACHE_FILE}", file=sys.stderr)
     print(output)
+
+
+def main() -> None:
+    argv = sys.argv[1:]
+
+    if "--help" in argv or "-h" in argv:
+        print(__doc__.strip())
+        return
+
+    if "--update" in argv or "-u" in argv:
+        self_update()
+        return
+
+    # --print: show cache only, never generate
+    if "--print" in argv or "-p" in argv:
+        if CACHE_FILE.exists():
+            print(CACHE_FILE.read_text())
+        else:
+            print("No cached cheat sheet yet. Run: cool-apps-refresh --refresh", file=sys.stderr)
+        return
+
+    # load config for any path that calls the AI
+    ai_cfg = load_ai_config()
+    backend = ai_cfg.get("AI", "auto")
+    custom_cmd = ai_cfg.get("AI_CMD", "")
+    try:
+        max_lines = int(ai_cfg.get("MAX_LINES", "45"))
+    except ValueError:
+        max_lines = 45
+    if "--ai" in argv:
+        idx = argv.index("--ai")
+        if idx + 1 < len(argv):
+            backend = argv[idx + 1]
+
+    force_refresh = "--refresh" in argv or "-r" in argv or "--ai" in argv
+
+    # no args: print if cache exists, generate only on first run
+    if not argv:
+        if CACHE_FILE.exists():
+            print(CACHE_FILE.read_text())
+            return
+        print("→ No cheat sheet yet — generating for the first time...", file=sys.stderr)
+        _do_refresh(backend, custom_cmd, max_lines)
+        return
+
+    if force_refresh:
+        _do_refresh(backend, custom_cmd, max_lines)
 
 
 if __name__ == "__main__":

@@ -178,15 +178,10 @@ printf "────────────────────────
 # ── 1. binary ────────────────────────────────────────────────
 header "1/4  Script"
 if [ -f "$BIN" ]; then
-  printf "  %s already exists.\n" "$BIN"
-  if confirm "Overwrite?"; then
-    mkdir -p "$BIN_DIR"
-    download "$REPO/cool-apps-refresh" > "$BIN"
-    chmod +x "$BIN"
-    info "Script updated"
-  else
-    skip "Kept existing script"
-  fi
+  mkdir -p "$BIN_DIR"
+  download "$REPO/cool-apps-refresh" > "$BIN"
+  chmod +x "$BIN"
+  info "Script updated"
 else
   if confirm "Install cool-apps-refresh to $BIN?"; then
     mkdir -p "$BIN_DIR"
