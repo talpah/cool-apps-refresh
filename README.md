@@ -35,20 +35,35 @@ Auto-detection tries them in this order, using the first one found:
 ## Install
 
 ```sh
+curl -fsSL https://raw.githubusercontent.com/talpah/cool-apps-refresh/main/setup.sh | sh
+```
+
+The script is idempotent — safe to re-run. It will:
+
+1. Install `cool-apps-refresh` to `~/.local/bin/`
+2. Create `~/.config/cool-apps/exclude` and `config` (skips if already present)
+3. Enable a weekly systemd user timer for auto-refresh
+4. Inject the shell snippet into `~/.zshrc` (before p10k instant prompt if present)
+5. Generate the first cheat sheet
+
+### Manual install
+
+<details>
+<summary>Step-by-step without the installer</summary>
+
+```sh
 # 1. Copy the script
 cp cool-apps-refresh ~/.local/bin/cool-apps-refresh
 chmod +x ~/.local/bin/cool-apps-refresh
 
-# 2. Optional: exclusion list (tools to hide from the cheat sheet)
+# 2. Optional: exclusion list
 mkdir -p ~/.config/cool-apps
 cp exclude.example ~/.config/cool-apps/exclude
-# edit it to your liking
 
 # 3. Optional: AI backend config
 cp config.example ~/.config/cool-apps/config
-# edit AI= to set a backend, or leave as auto
 
-# 4. Show cheat sheet on new terminal — add to ~/.zshrc BEFORE the p10k instant prompt block
+# 4. Add to ~/.zshrc BEFORE the p10k instant prompt block
 () {
   local cache="$HOME/.cache/cool-apps-motd.txt"
   local stamp="$HOME/.cache/cool-apps-shown-date"
@@ -60,7 +75,7 @@ cp config.example ~/.config/cool-apps/config
   echo "$today" > "$stamp"
 }
 
-# 5. Install systemd user timer (weekly auto-refresh)
+# 5. Install systemd user timer
 cp cool-apps.service cool-apps.timer ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now cool-apps.timer
@@ -68,6 +83,8 @@ systemctl --user enable --now cool-apps.timer
 # 6. Generate the first cheat sheet
 cool-apps-refresh
 ```
+
+</details>
 
 ## Usage
 
