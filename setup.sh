@@ -41,25 +41,10 @@ download() {
 }
 
 # ── install script ────────────────────────────────────────────
-# Prefer a local copy (running from the repo) over downloading from GitHub.
 install_script() {
   _dest="$1"
   _tmp=$(mktemp)
-  # $0 is "sh" when piped, so also check ./cool-apps-refresh
-  _self_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _self_dir=""
-  _local=""
-  for _candidate in "$_self_dir/cool-apps-refresh" "./cool-apps-refresh"; do
-    if [ -f "$_candidate" ] && [ "$_candidate" != "$_dest" ]; then
-      _local="$_candidate"; break
-    fi
-  done
-
-  if [ -n "$_local" ]; then
-    cp "$_local" "$_tmp"
-    info "Using local script: $_local"
-  else
-    download "$REPO/cool-apps-refresh" > "$_tmp" || { rm -f "$_tmp"; die "Download failed"; }
-  fi
+  download "$REPO/cool-apps-refresh" > "$_tmp" || { rm -f "$_tmp"; die "Download failed"; }
   mv "$_tmp" "$_dest"
   chmod +x "$_dest"
 }
