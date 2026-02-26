@@ -1,8 +1,8 @@
 [Unit]
-Description=Weekly refresh of cool-apps terminal cheat sheet
+Description=Daily refresh of cool-apps terminal cheat sheet
 
 [Timer]
-OnCalendar=Sun *-*-* 10:00:00
+OnCalendar=*-*-* 10:00:00
 Persistent=true
 RandomizedDelaySec=600
 

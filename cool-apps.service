@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=%h/.local/bin/cool-apps-refresh
+ExecStart=%h/.local/bin/cool-apps-refresh --refresh
 StandardOutput=null
 StandardError=journal
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin

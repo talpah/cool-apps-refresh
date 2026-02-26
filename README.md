@@ -79,7 +79,7 @@ The installer asks for confirmation before each step. It will offer to:
 
 1. Install `cool-apps-refresh` to `~/.local/bin/`
 2. Create `~/.config/cool-apps/exclude` and `config` (skips if already present)
-3. Enable a weekly systemd user timer (or cron job as fallback)
+3. Enable a daily systemd user timer (or cron job as fallback)
 4. Inject the shell snippet into your rc file (zsh, bash, fish, ksh supported)
 5. Generate the first cheat sheet
 
@@ -121,7 +121,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now cool-apps.timer
 
 # 6. Generate the first cheat sheet
-cool-apps-refresh
+cool-apps-refresh --refresh
 ```
 
 </details>

@@ -113,17 +113,17 @@ setup_timer() {
       download "$REPO/cool-apps.timer"   > "$_sdir/cool-apps.timer"
       systemctl --user daemon-reload
       systemctl --user enable --now cool-apps.timer
-      info "Systemd timer enabled (runs every Sunday at 10:00)"
+      info "Systemd timer enabled (runs daily at 10:00)"
     else
-      skip "Skipped timer — run 'cool-apps-refresh' manually to regenerate"
+      skip "Skipped timer — run 'cool-apps-refresh --refresh' manually to regenerate"
     fi
   else
     # Offer cron as fallback
-    printf "  systemd user session not available. Install a weekly cron job instead?\n"
+    printf "  systemd user session not available. Install a daily cron job instead?\n"
     if confirm "Add cron job?"; then
-      _cron_line="0 10 * * 0 $BIN"
+      _cron_line="0 10 * * * $BIN --refresh"
       ( crontab -l 2>/dev/null | grep -v "cool-apps-refresh"; echo "$_cron_line" ) | crontab -
-      info "Cron job added: $BIN every Sunday at 10:00"
+      info "Cron job added: $BIN --refresh daily at 10:00"
     else
       skip "Skipped auto-refresh — run 'cool-apps-refresh' manually"
     fi
