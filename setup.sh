@@ -5,24 +5,31 @@
 set -eu
 
 REPO="https://raw.githubusercontent.com/talpah/cool-apps-refresh/main"
-BIN="$HOME/.local/bin/cool-apps-refresh"
+BIN_DIR="$HOME/.local/bin"
+BIN="$BIN_DIR/cool-apps-refresh"
 CONFIG_DIR="$HOME/.config/cool-apps"
-SYSTEMD_DIR="$HOME/.config/systemd/user"
-CACHE_DIR="$HOME/.cache"
 
 # ── colours ──────────────────────────────────────────────────
 if [ -t 1 ]; then
-  GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; RESET='\033[0m'
+  BOLD='\033[1m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; RESET='\033[0m'
 else
-  GREEN=''; YELLOW=''; RED=''; RESET=''
+  BOLD=''; GREEN=''; YELLOW=''; CYAN=''; RESET=''
 fi
 
 info()    { printf "  ${GREEN}✓${RESET} %s\n" "$1"; }
 warn()    { printf "  ${YELLOW}!${RESET} %s\n" "$1"; }
-section() { printf "\n%s\n" "$1"; }
-die()     { printf "  ${RED}✗${RESET} %s\n" "$1" >&2; exit 1; }
+skip()    { printf "  ${CYAN}-${RESET} %s\n" "$1"; }
+header()  { printf "\n${BOLD}%s${RESET}\n" "$1"; }
+die()     { printf "\n  ✗ %s\n" "$1" >&2; exit 1; }
 
-# ── helpers ───────────────────────────────────────────────────
+# ── prompt y/n ────────────────────────────────────────────────
+confirm() {
+  printf "  %s [y/N] " "$1"
+  read -r answer </dev/tty
+  case "$answer" in [yY]*) return 0 ;; *) return 1 ;; esac
+}
+
+# ── download ──────────────────────────────────────────────────
 download() {
   if command -v curl >/dev/null 2>&1; then
     curl -fsSL "$1"
@@ -33,21 +40,32 @@ download() {
   fi
 }
 
-detect_rcfile() {
-  case "${SHELL:-}" in
-    */zsh)  echo "$HOME/.zshrc" ;;
-    */bash) echo "$HOME/.bashrc" ;;
-    *)
-      # fallback: check which exists
-      if [ -f "$HOME/.zshrc" ]; then echo "$HOME/.zshrc"
-      else echo "$HOME/.bashrc"
-      fi
-      ;;
+# ── shell detection ───────────────────────────────────────────
+detect_shell() {
+  # Prefer the running shell, fall back to $SHELL
+  _shell="${SHELL:-sh}"
+  case "$_shell" in
+    */zsh)  echo "zsh"  ;;
+    */bash) echo "bash" ;;
+    */fish) echo "fish" ;;
+    */ksh)  echo "ksh"  ;;
+    *)      echo "unknown" ;;
   esac
 }
 
-# ── zshrc snippet ─────────────────────────────────────────────
-SNIPPET='
+rcfile_for() {
+  case "$1" in
+    zsh)  echo "$HOME/.zshrc" ;;
+    bash) echo "$HOME/.bashrc" ;;
+    fish) echo "$HOME/.config/fish/config.fish" ;;
+    ksh)  echo "$HOME/.kshrc" ;;
+    *)    echo "" ;;
+  esac
+}
+
+# ── shell snippets ────────────────────────────────────────────
+# zsh / bash / ksh: uses () anonymous function + [[ ]]
+SNIPPET_SH='
 # cool-apps reminder — show once per day in new interactive terminal
 () {
   local cache="$HOME/.cache/cool-apps-motd.txt"
@@ -60,108 +78,185 @@ SNIPPET='
   echo "$today" > "$stamp"
 }'
 
-inject_snippet() {
-  rcfile="$1"
+# fish: uses a function
+SNIPPET_FISH='
+# cool-apps reminder — show once per day in new interactive terminal
+function _cool_apps_reminder
+  set cache "$HOME/.cache/cool-apps-motd.txt"
+  set stamp "$HOME/.cache/cool-apps-shown-date"
+  set today (date +%Y-%m-%d)
+  test -f "$cache" || return
+  test "$(cat "$stamp" 2>/dev/null)" = "$today" && return
+  cat "$cache"
+  echo "$today" > "$stamp"
+end
+_cool_apps_reminder'
 
-  # Already installed?
-  if grep -q "cool-apps-motd" "$rcfile" 2>/dev/null; then
-    info "Shell snippet already in $rcfile"
+# ── timer / cron setup ────────────────────────────────────────
+setup_timer() {
+  if command -v systemctl >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; then
+    # systemd user session available
+    _sdir="$HOME/.config/systemd/user"
+    printf "  Install a weekly systemd user timer to auto-refresh the cheat sheet?\n"
+    if confirm "Enable cool-apps.timer?"; then
+      mkdir -p "$_sdir"
+      download "$REPO/cool-apps.service" > "$_sdir/cool-apps.service"
+      download "$REPO/cool-apps.timer"   > "$_sdir/cool-apps.timer"
+      systemctl --user daemon-reload
+      systemctl --user enable --now cool-apps.timer
+      info "Systemd timer enabled (runs every Sunday at 10:00)"
+    else
+      skip "Skipped timer — run 'cool-apps-refresh' manually to regenerate"
+    fi
+  else
+    # Offer cron as fallback
+    printf "  systemd user session not available. Install a weekly cron job instead?\n"
+    if confirm "Add cron job?"; then
+      _cron_line="0 10 * * 0 $BIN"
+      ( crontab -l 2>/dev/null | grep -v "cool-apps-refresh"; echo "$_cron_line" ) | crontab -
+      info "Cron job added: $BIN every Sunday at 10:00"
+    else
+      skip "Skipped auto-refresh — run 'cool-apps-refresh' manually"
+    fi
+  fi
+}
+
+# ── shell snippet injection ───────────────────────────────────
+setup_shell() {
+  _shell="$1"
+  _rcfile="$2"
+  _snippet="$3"
+
+  if [ -z "$_rcfile" ]; then
+    warn "Unknown shell '$_shell' — skipping shell integration"
+    warn "Manually add the snippet from the README to your shell config"
     return
   fi
 
-  # If p10k instant prompt is present, insert before it (avoids console output warning)
-  if grep -q "p10k-instant-prompt" "$rcfile" 2>/dev/null; then
-    python3 - "$rcfile" "$SNIPPET" <<'PYEOF'
+  if grep -q "cool-apps-motd" "$_rcfile" 2>/dev/null; then
+    skip "Shell snippet already in $_rcfile"
+    return
+  fi
+
+  printf "  Add a snippet to %s to show the cheat sheet once per day?\n" "$_rcfile"
+  if ! confirm "Add shell snippet?"; then
+    skip "Skipped shell snippet"
+    return
+  fi
+
+  # zsh: inject before p10k instant prompt if present
+  if [ "$_shell" = "zsh" ] && grep -q "p10k-instant-prompt" "$_rcfile" 2>/dev/null; then
+    python3 - "$_rcfile" "$_snippet" <<'PYEOF'
 import sys
 from pathlib import Path
-
-rcfile = Path(sys.argv[1])
-snippet = sys.argv[2]
-marker = "# Enable Powerlevel10k instant prompt"
+rcfile, snippet = Path(sys.argv[1]), sys.argv[2]
 content = rcfile.read_text()
-
-if marker in content:
-    content = content.replace(marker, snippet.strip() + "\n\n" + marker)
-else:
-    # p10k source line without the comment
-    for line in content.splitlines():
-        if "p10k-instant-prompt" in line:
-            content = content.replace(line, snippet.strip() + "\n\n" + line)
-            break
-
-rcfile.write_text(content)
+marker = next(
+    (l for l in content.splitlines() if "p10k-instant-prompt" in l),
+    None
+)
+if marker:
+    content = content.replace(marker, snippet.strip() + "\n\n" + marker, 1)
+    rcfile.write_text(content)
 PYEOF
-    info "Shell snippet injected before p10k instant prompt in $rcfile"
+    info "Snippet injected before p10k instant prompt in $_rcfile"
   else
-    printf '%s\n' "$SNIPPET" >> "$rcfile"
-    info "Shell snippet appended to $rcfile"
+    printf '\n%s\n' "$_snippet" >> "$_rcfile"
+    info "Snippet appended to $_rcfile"
   fi
 }
 
 # ══ main ══════════════════════════════════════════════════════
 
-section "── Installing cool-apps-refresh ──────────────────────"
+printf "\n${BOLD}cool-apps-refresh installer${RESET}\n"
+printf "────────────────────────────────────────────────────\n"
+printf "  Detected shell : %s\n" "$(detect_shell)"
+printf "  Install dir    : %s\n" "$BIN_DIR"
+printf "  Config dir     : %s\n" "$CONFIG_DIR"
+printf "────────────────────────────────────────────────────\n"
 
-# 1. binary
-mkdir -p "$HOME/.local/bin"
-download "$REPO/cool-apps-refresh" > "$BIN"
-chmod +x "$BIN"
-info "Script installed to $BIN"
+# ── 1. binary ────────────────────────────────────────────────
+header "1/4  Script"
+if [ -f "$BIN" ]; then
+  printf "  %s already exists.\n" "$BIN"
+  if confirm "Overwrite?"; then
+    mkdir -p "$BIN_DIR"
+    download "$REPO/cool-apps-refresh" > "$BIN"
+    chmod +x "$BIN"
+    info "Script updated"
+  else
+    skip "Kept existing script"
+  fi
+else
+  if confirm "Install cool-apps-refresh to $BIN?"; then
+    mkdir -p "$BIN_DIR"
+    download "$REPO/cool-apps-refresh" > "$BIN"
+    chmod +x "$BIN"
+    info "Installed to $BIN"
+  else
+    die "Script is required — aborting"
+  fi
+fi
 
-# 2. config dir + example files (don't overwrite existing)
+# ── 2. config files ───────────────────────────────────────────
+header "2/4  Config"
 mkdir -p "$CONFIG_DIR"
 
 if [ ! -f "$CONFIG_DIR/exclude" ]; then
-  download "$REPO/exclude.example" > "$CONFIG_DIR/exclude"
-  info "Exclusion list created at $CONFIG_DIR/exclude"
+  if confirm "Create exclusion list at $CONFIG_DIR/exclude?"; then
+    download "$REPO/exclude.example" > "$CONFIG_DIR/exclude"
+    info "Created $CONFIG_DIR/exclude — edit it to hide tools you know well"
+  else
+    skip "Skipped exclusion list"
+  fi
 else
-  info "Exclusion list already exists — skipping"
+  skip "$CONFIG_DIR/exclude already exists"
 fi
 
 if [ ! -f "$CONFIG_DIR/config" ]; then
-  download "$REPO/config.example" > "$CONFIG_DIR/config"
-  info "AI config created at $CONFIG_DIR/config"
+  if confirm "Create AI backend config at $CONFIG_DIR/config?"; then
+    download "$REPO/config.example" > "$CONFIG_DIR/config"
+    info "Created $CONFIG_DIR/config — edit AI= to set your backend"
+  else
+    skip "Skipped AI config (defaults to auto-detect)"
+  fi
 else
-  info "AI config already exists — skipping"
+  skip "$CONFIG_DIR/config already exists"
 fi
 
-# 3. systemd user timer
-if command -v systemctl >/dev/null 2>&1; then
-  mkdir -p "$SYSTEMD_DIR"
-  download "$REPO/cool-apps.service" > "$SYSTEMD_DIR/cool-apps.service"
-  download "$REPO/cool-apps.timer"   > "$SYSTEMD_DIR/cool-apps.timer"
-  systemctl --user daemon-reload
-  systemctl --user enable --now cool-apps.timer
-  info "Systemd timer enabled (weekly auto-refresh)"
+# ── 3. timer / cron ──────────────────────────────────────────
+header "3/4  Auto-refresh"
+setup_timer
+
+# ── 4. shell integration ─────────────────────────────────────
+header "4/4  Shell integration"
+_shell=$(detect_shell)
+_rcfile=$(rcfile_for "$_shell")
+
+if [ "$_shell" = "fish" ]; then
+  setup_shell "fish" "$_rcfile" "$SNIPPET_FISH"
 else
-  warn "systemctl not found — skipping timer setup"
+  setup_shell "$_shell" "$_rcfile" "$SNIPPET_SH"
 fi
 
-# 4. shell snippet
-rcfile=$(detect_rcfile)
-inject_snippet "$rcfile"
+# ── first run ─────────────────────────────────────────────────
+header "Done"
 
-# 5. first run
-section "── Generating first cheat sheet ──────────────────────"
-
-# Check if any known AI backend is available
 AI_FOUND=0
-for backend in claude llm sgpt aichat; do
-  if command -v "$backend" >/dev/null 2>&1 || [ -x "$HOME/.local/bin/$backend" ]; then
-    AI_FOUND=1
-    break
+for _b in claude llm sgpt aichat; do
+  if command -v "$_b" >/dev/null 2>&1 || [ -x "$BIN_DIR/$_b" ]; then
+    AI_FOUND=1; break
   fi
 done
 
 if [ "$AI_FOUND" = "1" ]; then
-  "$BIN" && info "Cheat sheet generated at $CACHE_DIR/cool-apps-motd.txt"
+  if confirm "Generate your first cheat sheet now?"; then
+    "$BIN"
+  fi
 else
-  warn "No AI backend found — skipping first run"
-  warn "Install one of: claude, llm, sgpt, aichat"
-  warn "Or set AI=custom + AI_CMD=... in $CONFIG_DIR/config"
+  warn "No AI backend found (claude / llm / sgpt / aichat)"
+  warn "Install one, or set AI=custom + AI_CMD=... in $CONFIG_DIR/config"
   warn "Then run: cool-apps-refresh"
 fi
 
-section "── Done ───────────────────────────────────────────────"
-printf "  Open a new terminal to see your cheat sheet.\n"
-printf "  Edit %s to exclude tools you know well.\n\n" "$CONFIG_DIR/exclude"
+printf "\n  Open a new terminal (or run 'source %s') to see your cheat sheet.\n\n" "${_rcfile:-your shell config}"

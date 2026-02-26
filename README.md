@@ -3,13 +3,25 @@
 AI-powered terminal cheat sheet that shows up when you open a new shell. Scans your apt history and zsh history, then uses an AI CLI to generate a compact reminder of the interesting tools you've installed but might forget about.
 
 ```
-── TERMINAL & SHELL ───────────────────────────────────────────
-  glow         Markdown viewer in terminal       glow -p < README.md
-  wishlist     CLI task manager                     wishlist list
+── KUBERNETES ────────────────────────────────────────
+  k9s        K8s TUI dashboard    ⚡ k9s -A
+  kubectl    Cluster control         kubectl get pods -A
 
-── NETWORK & SECURITY ─────────────────────────────────────────
-  socat        Socket relay/proxy              ⚡ socat TCP-LISTEN:8080,fork TCP:upstream:80
-  tailscale    Mesh VPN                        ⚡ tailscale funnel 8080
+── NETWORK ───────────────────────────────────────────
+  socat      TCP/socket relay     ⚡ socat TCP-LISTEN:8080,fork TCP:localhost:3000
+  tailscale  Mesh VPN             ⚡ tailscale funnel 8080
+
+── FILES & MEDIA ─────────────────────────────────────
+  glow       Markdown viewer         glow -p README.md
+  chafa      Image → ANSI art     ⚡ chafa --colors 256 photo.jpg
+  trash-cli  Trash-bin delete        trash-put ./old-dir/
+
+── DEVELOPMENT ───────────────────────────────────────
+  gh         GitHub CLI              gh pr list --state open
+  glab       GitLab CLI           ⚡ glab mr list --state opened
+  oathtool   TOTP code generator  ⚡ oathtool --totp -b SECRET
+  btop       Resource monitor        btop
+  acli       Atlassian/Jira CLI   ⚡ acli issue list
 ```
 
 Tools marked with ⚡ haven't appeared in your recent shell history.
