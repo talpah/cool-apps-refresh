@@ -340,7 +340,8 @@ def unique_binaries(commands: list[str], exclusions: frozenset[str]) -> list[str
     return sorted(names)
 
 
-def build_prompt(packages: list[dict], binaries: list[str], recent: list[str]) -> str:
+def build_prompt(packages: list[dict], binaries: list[str], recent: list[str],
+                 max_lines: int = 45) -> str:
     pkg_text = "\n".join(f"  {p['date']}  {p['package']}" for p in packages[:100])
     bin_text = ", ".join(binaries[:120])
     recent_text = "\n".join(f"  {c}" for c in recent[-60:])
@@ -361,7 +362,7 @@ Generate a compact cheat sheet. Requirements:
 - For each tool: name + one-sentence description + ONE killer example command
 - If the tool hasn't been used recently, prefix the example command with ⚡ (no other annotation)
 - Group into 3-5 categories with ASCII dividers
-- Max 45 lines total, no markdown, terminal-friendly plain text
+- Max {max_lines} lines total, no markdown, terminal-friendly plain text
 - No title, no surrounding box — just the category sections
 
 Example format (note: non-⚡ lines use 3 spaces to align with "⚡ "):
@@ -496,6 +497,10 @@ def main() -> None:
     ai_cfg = load_ai_config()
     backend = ai_cfg.get("AI", "auto")
     custom_cmd = ai_cfg.get("AI_CMD", "")
+    try:
+        max_lines = int(ai_cfg.get("MAX_LINES", "45"))
+    except ValueError:
+        max_lines = 45
     if "--ai" in argv:
         idx = argv.index("--ai")
         if idx + 1 < len(argv):
@@ -515,7 +520,7 @@ def main() -> None:
         file=sys.stderr,
     )
 
-    prompt = build_prompt(packages, binaries, history)
+    prompt = build_prompt(packages, binaries, history, max_lines=max_lines)
 
     body = call_ai(prompt, backend=backend, custom_cmd=custom_cmd)
     # Strip markdown code fences Claude sometimes wraps output in

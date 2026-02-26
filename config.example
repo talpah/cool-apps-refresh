@@ -8,3 +8,8 @@ AI=auto
 # AI_CMD=ollama run llama3
 # AI_CMD=llm -m gpt-4o
 # AI_CMD=aichat -m ollama:llama3.2
+
+# Max lines in the generated cheat sheet (default: 45)
+# Increase for a longer sheet, decrease for a quick glance
+# MAX_LINES=30
+# MAX_LINES=80

@@ -26,6 +26,15 @@ AI-powered terminal cheat sheet that shows up when you open a new shell. Scans y
 
 Tools marked with ⚡ haven't appeared in your recent shell history.
 
+## How it works
+
+1. Collects installed packages from all detected package managers (apt, pacman, dnf, zypper, snap, flatpak, brew)
+2. Parses `~/.zsh_history` for recently-used binaries
+3. Filters out library packages, system packages, and your exclusion list
+4. Pipes the merged data to your AI backend to generate a categorised cheat sheet
+5. Caches the result to `~/.cache/cool-apps-motd.txt`
+6. The shell snippet displays it once per day when you open a new terminal
+
 ## Requirements
 
 - Python 3.8+
@@ -136,7 +145,7 @@ cool-apps-refresh --ai custom    # uses AI_CMD from config
 
 Both files live in `~/.config/cool-apps/`.
 
-### `config` — AI backend
+### `config` — AI backend and output size
 
 ```sh
 # AI backend: auto, claude, llm, sgpt, aichat, custom
@@ -145,6 +154,11 @@ AI=auto
 # Required when AI=custom — any command that reads prompt from stdin:
 # AI_CMD=ollama run llama3
 # AI_CMD=llm -m gpt-4o
+
+# Max lines in the generated cheat sheet (default: 45)
+# Increase for a longer sheet, decrease for a quick glance
+# MAX_LINES=30
+# MAX_LINES=80
 ```
 
 ### `exclude` — hide tools you already know
@@ -157,15 +171,6 @@ vim
 ffmpeg
 # add whatever you use daily
 ```
-
-## How it works
-
-1. Collects installed packages from all detected package managers (apt, pacman, dnf, zypper, snap, flatpak, brew)
-2. Parses `~/.zsh_history` for recently-used binaries
-3. Filters out library packages, system packages, and your exclusion list
-4. Pipes the merged data to your AI backend to generate a categorised cheat sheet
-5. Caches the result to `~/.cache/cool-apps-motd.txt`
-6. The shell snippet displays it once per day when you open a new terminal
 
 ## License
 
