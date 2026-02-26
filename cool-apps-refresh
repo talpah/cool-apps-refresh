@@ -297,6 +297,47 @@ def call_ai(prompt: str, backend: str = "auto", custom_cmd: str = "") -> str:
     return stdout.strip()
 
 
+def fix_alignment(text: str) -> str:
+    """Re-align tool entry lines to consistent name/description/command columns.
+
+    Parses lines of the form:
+        <indent><name>   <description>   [⚡ ]<command>
+    and re-emits them with padded, consistent column widths.
+    ⚡ is assumed to occupy 2 terminal columns, so non-⚡ lines use 3 spaces.
+    """
+    # name is one word; description and command are separated by 2+ spaces.
+    # We split on 2+ spaces (max 2 splits) to get [name, desc, cmd_part].
+    tool_pat = re.compile(r"^( {2,4})(\S+)\s{2,}(.+?)\s{2,}(⚡\s*)?(.+)$")
+
+    parsed = []
+    for line in text.splitlines():
+        m = tool_pat.match(line)
+        if m:
+            indent, name, desc, bolt, cmd = m.groups()
+            parsed.append((True, indent, name, desc.strip(), bool(bolt), cmd.strip()))
+        else:
+            parsed.append((False, line))
+
+    tool_rows = [p for p in parsed if p[0]]
+    if not tool_rows:
+        return text
+
+    name_w = max(len(p[2]) for p in tool_rows)
+    desc_w = min(max(len(p[3]) for p in tool_rows), 34)
+
+    out = []
+    for p in parsed:
+        if not p[0]:
+            out.append(p[1])
+        else:
+            _, indent, name, desc, has_bolt, cmd = p
+            # ⚡ is ~2 terminal columns wide, so non-⚡ uses 3 spaces to match "⚡ "
+            prefix = "⚡ " if has_bolt else "   "
+            out.append(f"{indent}{name:<{name_w}}  {desc:<{desc_w}}  {prefix}{cmd}")
+
+    return "\n".join(out)
+
+
 def main() -> None:
     argv = sys.argv[1:]
 
@@ -336,7 +377,7 @@ def main() -> None:
     # Strip markdown code fences Claude sometimes wraps output in
     body = re.sub(r"^```[a-z]*\n?", "", body, flags=re.MULTILINE)
     body = re.sub(r"^```$", "", body, flags=re.MULTILINE)
-    body = body.strip()
+    body = fix_alignment(body.strip())
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     output = f"\n{body}\n\n  ↻ updated {now} · run cool-apps-refresh to regenerate\n"
