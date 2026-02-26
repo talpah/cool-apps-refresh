@@ -24,12 +24,12 @@ AI-powered terminal cheat sheet that shows up when you open a new shell. Scans y
   acli       Atlassian/Jira CLI   ⚡ acli issue list
 ```
 
-Tools marked with ⚡ haven't appeared in your recent shell history.
+Tools marked with ⚡ have a low usage count (≤2) or haven't appeared in your recent shell history.
 
 ## How it works
 
 1. Collects installed packages from all detected package managers (apt, pacman, dnf, zypper, snap, flatpak, brew)
-2. Parses shell history for recently-used binaries (zsh, bash, fish, ksh — whichever are present)
+2. Parses shell history for recently-used binaries (zsh, bash, fish, ksh — whichever are present) and counts usage frequency
 3. Filters out library packages, system packages, and your exclusion list
 4. Pipes the merged data to your AI backend to generate a categorised cheat sheet
 5. Caches the result to `~/.cache/cool-apps-motd.txt`
@@ -83,7 +83,7 @@ The installer asks for confirmation before each step. It will offer to:
 4. Inject the shell snippet into your rc file (zsh, bash, fish, ksh supported)
 5. Generate the first cheat sheet
 
-The script is idempotent — safe to re-run.
+The script is idempotent — safe to re-run. On re-runs it always updates the script binary without prompting.
 
 ### Manual install
 
@@ -129,12 +129,19 @@ cool-apps-refresh
 ## Usage
 
 ```sh
-cool-apps-refresh            # regenerate (auto-detects backend)
-cool-apps-refresh -r
+cool-apps-refresh            # print cached cheat sheet (generates on first run)
+
+cool-apps-refresh -r         # force regenerate
 cool-apps-refresh --refresh
 
-cool-apps-refresh -p         # print cached cheat sheet
+cool-apps-refresh -p         # print cached cheat sheet only (no auto-generate)
 cool-apps-refresh --print
+
+cool-apps-refresh -u         # update this script from GitHub
+cool-apps-refresh --update
+
+cool-apps-refresh -h         # show help
+cool-apps-refresh --help
 
 cool-apps-refresh --ai claude    # force a specific backend
 cool-apps-refresh --ai llm
