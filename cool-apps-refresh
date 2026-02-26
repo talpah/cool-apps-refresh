@@ -1,0 +1,270 @@
+#!/usr/bin/env python3
+"""Refresh the cool-apps cheat sheet using the claude CLI.
+
+Reads apt history + zsh history, asks Claude to generate a compact reminder
+of interesting terminal tools you've installed but might forget about.
+
+Usage:
+    cool-apps-refresh            # regenerate (same as --refresh)
+    cool-apps-refresh --refresh  # regenerate cheat sheet
+    cool-apps-refresh -r         # same
+    cool-apps-refresh --print    # print cached version
+    cool-apps-refresh -p         # same
+"""
+
+import gzip
+import re
+import shutil
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+
+CACHE_FILE = Path.home() / ".cache" / "cool-apps-motd.txt"
+CLAUDE_BIN = Path.home() / ".local" / "bin" / "claude"
+EXCLUDE_FILE = Path.home() / ".config" / "cool-apps" / "exclude"
+
+
+def load_exclusions() -> frozenset[str]:
+    """Load user exclusion list from ~/.config/cool-apps/exclude."""
+    if not EXCLUDE_FILE.exists():
+        return frozenset()
+    names = set()
+    for line in EXCLUDE_FILE.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            names.add(line)
+    return frozenset(names)
+
+# Prefixes that are almost never interesting terminal tools
+SKIP_PREFIXES = (
+    "lib", "python3-", "linux-", "firmware-", "fonts-", "locales",
+    "xfonts-", "kde-", "gnome-", "gir1.", "libgl", "libvulkan",
+    "libpython", "libnss", "libcurl", "libssl", "libglib",
+    "libgtk", "libqt", "libx11", "libxcb", "libxkb", "libwx",
+    "libavcodec", "libavformat", "libavutil", "libavdevice",
+    "steam-libs", "libmagick",
+)
+
+SKIP_PACKAGES = frozenset({
+    "locales", "initramfs-tools", "initramfs-tools-core",
+    "initramfs-tools-bin", "pciutils", "pci.ids", "busybox",
+    "zstd", "bubblewrap", "apparmor", "dracut-install",
+    "linux-base", "linux-image-amd64",
+})
+
+
+def _parse_apt_block(block: str) -> list[dict]:
+    """Extract manually-installed packages from one apt history block."""
+    if "Install:" not in block:
+        return []
+
+    lines: dict[str, str] = {}
+    for line in block.splitlines():
+        if ": " in line:
+            k, v = line.split(": ", 1)
+            lines[k.strip()] = v.strip()
+
+    install_line = lines.get("Install", "")
+    date = lines.get("Start-Date", "")[:10]
+
+    results = []
+    for entry in install_line.split("),"):
+        entry = entry.strip().rstrip(")")
+        if not entry or "automatic" in entry:
+            continue
+        match = re.match(r"^(\S+?)(?::\w+)?\s*\(", entry)
+        if not match:
+            continue
+        pkg = match.group(1)
+        if pkg in SKIP_PACKAGES:
+            continue
+        if any(pkg.lower().startswith(p) for p in SKIP_PREFIXES):
+            continue
+        results.append({"package": pkg, "date": date})
+
+    return results
+
+
+def parse_apt_history(exclusions: frozenset[str]) -> list[dict]:
+    """Return deduped list of manually-installed packages, newest first."""
+    texts: list[str] = []
+
+    current = Path("/var/log/apt/history.log")
+    if current.exists():
+        texts.append(current.read_text(errors="replace"))
+
+    for gz in sorted(Path("/var/log/apt").glob("history.log.*.gz")):
+        try:
+            with gzip.open(gz, "rt", errors="replace") as f:
+                texts.append(f.read())
+        except OSError:
+            pass
+
+    seen: dict[str, dict] = {}
+    for text in texts:
+        for block in re.split(r"\n\n+", text.strip()):
+            for entry in _parse_apt_block(block):
+                pkg = entry["package"]
+                if pkg in exclusions:
+                    continue
+                if pkg not in seen or entry["date"] > seen[pkg]["date"]:
+                    seen[pkg] = entry
+
+    return sorted(seen.values(), key=lambda x: x["date"], reverse=True)
+
+
+def parse_zsh_history(tail: int = 400) -> list[str]:
+    """Return the last N commands from zsh history."""
+    hist = Path.home() / ".zsh_history"
+    if not hist.exists():
+        return []
+    lines = hist.read_text(errors="replace").splitlines()
+    commands = []
+    for line in lines:
+        # Extended history format: `: timestamp:elapsed;command`
+        if line.startswith(": "):
+            m = re.match(r"^: \d+:\d+;(.+)$", line)
+            if m:
+                commands.append(m.group(1).strip())
+        elif line.strip() and not line.startswith("#"):
+            commands.append(line.strip())
+    return commands[-tail:]
+
+
+def unique_binaries(commands: list[str], exclusions: frozenset[str]) -> list[str]:
+    """Extract sorted unique binary names from a list of shell commands."""
+    names: set[str] = set()
+    for cmd in commands:
+        for part in re.split(r"[|;&(]", cmd):
+            part = part.strip()
+            if not part:
+                continue
+            tokens = [t for t in part.split() if "=" not in t]
+            if not tokens:
+                continue
+            binary = tokens[0].split("/")[-1].lstrip("$")
+            if binary and not binary.startswith("-") and binary.isidentifier():
+                if binary not in exclusions:
+                    names.add(binary)
+    return sorted(names)
+
+
+def build_prompt(packages: list[dict], binaries: list[str], recent: list[str]) -> str:
+    pkg_text = "\n".join(f"  {p['date']}  {p['package']}" for p in packages[:100])
+    bin_text = ", ".join(binaries[:120])
+    recent_text = "\n".join(f"  {c}" for c in recent[-60:])
+
+    return f"""I need a reminder cheat sheet of cool terminal tools I've installed but might forget.
+
+MANUALLY INSTALLED PACKAGES (newest first):
+{pkg_text}
+
+UNIQUE BINARIES FROM MY RECENT ZSH HISTORY:
+{bin_text}
+
+RECENT SHELL HISTORY SAMPLE (last 60 commands):
+{recent_text}
+
+Generate a compact cheat sheet. Requirements:
+- Skip obvious daily-driver tools (git, vim, python, ssh, curl, grep, docker, ls, cat, etc.)
+- For each tool: name + one-sentence description + ONE killer example command
+- If the tool hasn't been used recently, prefix the example command with ⚡ (no other annotation)
+- Group into 3-5 categories with ASCII dividers
+- Max 45 lines total, no markdown, terminal-friendly plain text
+- No title, no surrounding box — just the category sections
+
+Example format:
+  ── MEDIA ──────────────────────────────────────────
+    ffmpeg     Convert/encode video       ffmpeg -i in.mp4 -c:v h264 out.mkv
+    chafa      Image → ANSI art           ⚡ chafa --colors 256 photo.jpg
+
+  ── NETWORK ────────────────────────────────────────
+    socat      Multipurpose TCP relay     ⚡ socat TCP-LISTEN:8080,fork TCP:localhost:3000
+"""
+
+
+def call_claude(prompt: str) -> str:
+    """Call claude -p with the given prompt piped via stdin, return stdout."""
+    import os
+
+    claude = str(CLAUDE_BIN) if CLAUDE_BIN.exists() else shutil.which("claude")
+    if not claude:
+        print("Error: claude CLI not found in ~/.local/bin or PATH", file=sys.stderr)
+        sys.exit(1)
+
+    # Strip Claude Code's nested-session guard so this works from any context
+    env = os.environ.copy()
+    env.pop("CLAUDECODE", None)
+
+    # Pipe prompt via stdin to avoid argument-length issues and pipe deadlocks.
+    # claude -p reads from stdin when no prompt argument is given.
+    proc = subprocess.Popen(
+        [
+            claude, "-p",
+            "--tools", "",
+            "--no-session-persistence",
+            "--model", "haiku",
+            "--system-prompt", "You are a helpful assistant. Output plain terminal text only.",
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    stdout, stderr = proc.communicate(input=prompt, timeout=120)
+
+    if proc.returncode != 0:
+        print(f"Error: claude exited {proc.returncode}", file=sys.stderr)
+        if stderr:
+            print(stderr, file=sys.stderr)
+        sys.exit(1)
+
+    return stdout.strip()
+
+
+def main() -> None:
+    args = set(sys.argv[1:])
+    if "--print" in args or "-p" in args:
+        if CACHE_FILE.exists():
+            print(CACHE_FILE.read_text())
+        else:
+            print("No cached cheat sheet yet. Run: cool-apps-refresh", file=sys.stderr)
+        return
+
+    exclusions = load_exclusions()
+
+    print("→ Parsing apt history...", file=sys.stderr)
+    packages = parse_apt_history(exclusions)
+
+    print("→ Parsing zsh history...", file=sys.stderr)
+    history = parse_zsh_history()
+    binaries = unique_binaries(history, exclusions)
+
+    print(
+        f"→ Found {len(packages)} packages, {len(binaries)} unique binaries",
+        file=sys.stderr,
+    )
+
+    prompt = build_prompt(packages, binaries, history)
+
+    print("→ Calling claude -p ...", file=sys.stderr)
+    body = call_claude(prompt)
+    # Strip markdown code fences Claude sometimes wraps output in
+    body = re.sub(r"^```[a-z]*\n?", "", body, flags=re.MULTILINE)
+    body = re.sub(r"^```$", "", body, flags=re.MULTILINE)
+    body = body.strip()
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    output = f"\n{body}\n\n  ↻ updated {now} · run cool-apps-refresh to regenerate\n"
+
+    CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    CACHE_FILE.write_text(output)
+
+    print(f"→ Written to {CACHE_FILE}", file=sys.stderr)
+    print(output)
+
+
+if __name__ == "__main__":
+    main()
