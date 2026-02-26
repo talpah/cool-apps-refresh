@@ -29,7 +29,7 @@ Tools marked with ⚡ haven't appeared in your recent shell history.
 ## How it works
 
 1. Collects installed packages from all detected package managers (apt, pacman, dnf, zypper, snap, flatpak, brew)
-2. Parses `~/.zsh_history` for recently-used binaries
+2. Parses shell history for recently-used binaries (zsh, bash, fish, ksh — whichever are present)
 3. Filters out library packages, system packages, and your exclusion list
 4. Pipes the merged data to your AI backend to generate a categorised cheat sheet
 5. Caches the result to `~/.cache/cool-apps-motd.txt`
@@ -38,7 +38,7 @@ Tools marked with ⚡ haven't appeared in your recent shell history.
 ## Requirements
 
 - Python 3.8+
-- zsh (reads `~/.zsh_history`)
+- At least one supported shell (zsh, bash, fish, or ksh)
 - At least one supported package manager (see below)
 - One of the supported AI backends (see AI backends)
 
