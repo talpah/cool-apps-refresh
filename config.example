@@ -1,0 +1,10 @@
+# cool-apps AI backend config
+#
+# AI backend to use: auto, claude, llm, sgpt, aichat, custom
+# auto = tries claude → llm → sgpt → aichat, uses first found
+AI=auto
+
+# If AI=custom, specify the command that reads prompt from stdin:
+# AI_CMD=ollama run llama3
+# AI_CMD=llm -m gpt-4o
+# AI_CMD=aichat -m ollama:llama3.2

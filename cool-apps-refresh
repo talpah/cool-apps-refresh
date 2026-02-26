@@ -1,15 +1,24 @@
 #!/usr/bin/env python3
-"""Refresh the cool-apps cheat sheet using the claude CLI.
+"""Refresh the cool-apps cheat sheet using an AI CLI backend.
 
-Reads apt history + zsh history, asks Claude to generate a compact reminder
-of interesting terminal tools you've installed but might forget about.
+Reads apt history + zsh history and generates a compact reminder of
+interesting tools you've installed but might forget about.
 
 Usage:
-    cool-apps-refresh            # regenerate (same as --refresh)
-    cool-apps-refresh --refresh  # regenerate cheat sheet
-    cool-apps-refresh -r         # same
-    cool-apps-refresh --print    # print cached version
-    cool-apps-refresh -p         # same
+    cool-apps-refresh               # regenerate (auto-detects AI backend)
+    cool-apps-refresh -r/--refresh  # same
+    cool-apps-refresh -p/--print    # print cached version
+    cool-apps-refresh --ai claude   # use a specific backend
+    cool-apps-refresh --ai llm
+    cool-apps-refresh --ai sgpt
+    cool-apps-refresh --ai aichat
+    cool-apps-refresh --ai custom   # uses AI_CMD from ~/.config/cool-apps/config
+
+Config: ~/.config/cool-apps/config
+    AI=auto          # auto-detect (default)
+    AI=claude        # force a specific backend
+    AI=custom
+    AI_CMD=ollama run llama3   # used when AI=custom
 """
 
 import gzip
@@ -21,8 +30,51 @@ from datetime import datetime
 from pathlib import Path
 
 CACHE_FILE = Path.home() / ".cache" / "cool-apps-motd.txt"
-CLAUDE_BIN = Path.home() / ".local" / "bin" / "claude"
 EXCLUDE_FILE = Path.home() / ".config" / "cool-apps" / "exclude"
+AI_CONFIG_FILE = Path.home() / ".config" / "cool-apps" / "config"
+
+SYSTEM_PROMPT = "You are a helpful assistant. Output plain terminal text only."
+
+# Known backends: tried in this order when AI=auto
+AUTO_ORDER = ["claude", "llm", "sgpt", "aichat"]
+
+
+def _find_bin(name: str) -> str | None:
+    """Return full path to binary, checking ~/.local/bin first."""
+    local = Path.home() / ".local" / "bin" / name
+    if local.exists():
+        return str(local)
+    return shutil.which(name)
+
+
+def _build_cmd(backend: str, bin_path: str) -> tuple[list[str], dict]:
+    """Return (cmd_args, env_overrides) for the given backend."""
+    if backend == "claude":
+        return (
+            [bin_path, "-p", "--tools", "", "--no-session-persistence",
+             "--model", "haiku", "--system-prompt", SYSTEM_PROMPT],
+            {"CLAUDECODE": None},   # None = unset the var
+        )
+    if backend == "llm":
+        return ([bin_path, "-s", SYSTEM_PROMPT], {})
+    if backend == "sgpt":
+        return ([bin_path], {})
+    if backend == "aichat":
+        return ([bin_path, "-S", SYSTEM_PROMPT], {})
+    raise ValueError(f"Unknown backend: {backend}")
+
+
+def load_ai_config() -> dict[str, str]:
+    """Read key=value pairs from ~/.config/cool-apps/config."""
+    cfg: dict[str, str] = {}
+    if not AI_CONFIG_FILE.exists():
+        return cfg
+    for line in AI_CONFIG_FILE.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            cfg[k.strip()] = v.strip()
+    return cfg
 
 
 def load_exclusions() -> frozenset[str]:
@@ -174,49 +226,70 @@ Generate a compact cheat sheet. Requirements:
 - Max 45 lines total, no markdown, terminal-friendly plain text
 - No title, no surrounding box — just the category sections
 
-Example format:
+Example format (note: non-⚡ lines use 3 spaces to align with "⚡ "):
   ── MEDIA ──────────────────────────────────────────
-    ffmpeg     Convert/encode video       ffmpeg -i in.mp4 -c:v h264 out.mkv
+    ffmpeg     Convert/encode video          ffmpeg -i in.mp4 -c:v h264 out.mkv
     chafa      Image → ANSI art           ⚡ chafa --colors 256 photo.jpg
 
   ── NETWORK ────────────────────────────────────────
     socat      Multipurpose TCP relay     ⚡ socat TCP-LISTEN:8080,fork TCP:localhost:3000
+    xxd        Hex dumper                    xxd file.bin | head -20
 """
 
 
-def call_claude(prompt: str) -> str:
-    """Call claude -p with the given prompt piped via stdin, return stdout."""
+def call_ai(prompt: str, backend: str = "auto", custom_cmd: str = "") -> str:
+    """Invoke an AI CLI with the prompt via stdin, return the response."""
     import os
 
-    claude = str(CLAUDE_BIN) if CLAUDE_BIN.exists() else shutil.which("claude")
-    if not claude:
-        print("Error: claude CLI not found in ~/.local/bin or PATH", file=sys.stderr)
-        sys.exit(1)
-
-    # Strip Claude Code's nested-session guard so this works from any context
     env = os.environ.copy()
-    env.pop("CLAUDECODE", None)
 
-    # Pipe prompt via stdin to avoid argument-length issues and pipe deadlocks.
-    # claude -p reads from stdin when no prompt argument is given.
+    if backend == "auto":
+        for name in AUTO_ORDER:
+            if _find_bin(name):
+                backend = name
+                break
+        else:
+            print(
+                f"Error: no AI backend found. Install one of: {', '.join(AUTO_ORDER)}\n"
+                f"Or set AI=custom + AI_CMD=... in {AI_CONFIG_FILE}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+    if backend == "custom":
+        if not custom_cmd:
+            print(f"Error: AI=custom requires AI_CMD in {AI_CONFIG_FILE}", file=sys.stderr)
+            sys.exit(1)
+        cmd = custom_cmd.split()
+        # custom commands get system prompt prepended to stdin
+        stdin_text = f"{SYSTEM_PROMPT}\n\n{prompt}"
+    else:
+        bin_path = _find_bin(backend)
+        if not bin_path:
+            print(f"Error: backend '{backend}' not found in PATH", file=sys.stderr)
+            sys.exit(1)
+        cmd, env_overrides = _build_cmd(backend, bin_path)
+        for k, v in env_overrides.items():
+            if v is None:
+                env.pop(k, None)
+            else:
+                env[k] = v
+        # sgpt doesn't have a system-prompt flag — prepend to stdin
+        stdin_text = f"{SYSTEM_PROMPT}\n\n{prompt}" if backend == "sgpt" else prompt
+
+    print(f"→ Calling {backend} ...", file=sys.stderr)
     proc = subprocess.Popen(
-        [
-            claude, "-p",
-            "--tools", "",
-            "--no-session-persistence",
-            "--model", "haiku",
-            "--system-prompt", "You are a helpful assistant. Output plain terminal text only.",
-        ],
+        cmd,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         env=env,
     )
-    stdout, stderr = proc.communicate(input=prompt, timeout=120)
+    stdout, stderr = proc.communicate(input=stdin_text, timeout=120)
 
     if proc.returncode != 0:
-        print(f"Error: claude exited {proc.returncode}", file=sys.stderr)
+        print(f"Error: {backend} exited {proc.returncode}", file=sys.stderr)
         if stderr:
             print(stderr, file=sys.stderr)
         sys.exit(1)
@@ -225,13 +298,23 @@ def call_claude(prompt: str) -> str:
 
 
 def main() -> None:
-    args = set(sys.argv[1:])
-    if "--print" in args or "-p" in args:
+    argv = sys.argv[1:]
+
+    if "--print" in argv or "-p" in argv:
         if CACHE_FILE.exists():
             print(CACHE_FILE.read_text())
         else:
             print("No cached cheat sheet yet. Run: cool-apps-refresh", file=sys.stderr)
         return
+
+    # --ai <backend> overrides config
+    ai_cfg = load_ai_config()
+    backend = ai_cfg.get("AI", "auto")
+    custom_cmd = ai_cfg.get("AI_CMD", "")
+    if "--ai" in argv:
+        idx = argv.index("--ai")
+        if idx + 1 < len(argv):
+            backend = argv[idx + 1]
 
     exclusions = load_exclusions()
 
@@ -249,8 +332,7 @@ def main() -> None:
 
     prompt = build_prompt(packages, binaries, history)
 
-    print("→ Calling claude -p ...", file=sys.stderr)
-    body = call_claude(prompt)
+    body = call_ai(prompt, backend=backend, custom_cmd=custom_cmd)
     # Strip markdown code fences Claude sometimes wraps output in
     body = re.sub(r"^```[a-z]*\n?", "", body, flags=re.MULTILINE)
     body = re.sub(r"^```$", "", body, flags=re.MULTILINE)
