@@ -64,6 +64,15 @@ def _build_cmd(backend: str, bin_path: str) -> tuple[list[str], dict]:
     raise ValueError(f"Unknown backend: {backend}")
 
 
+def _run_cmd(cmd: list[str]) -> str | None:
+    """Run a command silently, return stdout or None on failure/missing binary."""
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        return r.stdout if r.returncode == 0 else None
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+
+
 def load_ai_config() -> dict[str, str]:
     """Read key=value pairs from ~/.config/cool-apps/config."""
     cfg: dict[str, str] = {}
@@ -104,6 +113,13 @@ SKIP_PACKAGES = frozenset({
     "zstd", "bubblewrap", "apparmor", "dracut-install",
     "linux-base", "linux-image-amd64",
 })
+
+
+def _pkg_entry(pkg: str, date: str, exclusions: frozenset[str]) -> dict | None:
+    """Return a package entry dict if the package passes all filters, else None."""
+    if not pkg or pkg in exclusions or any(pkg.lower().startswith(p) for p in SKIP_PREFIXES):
+        return None
+    return {"package": pkg, "date": date}
 
 
 def _parse_apt_block(block: str) -> list[dict]:
@@ -166,6 +182,128 @@ def parse_apt_history(exclusions: frozenset[str]) -> list[dict]:
     return sorted(seen.values(), key=lambda x: x["date"], reverse=True)
 
 
+def parse_pacman_history(exclusions: frozenset[str]) -> list[dict]:
+    """Parse /var/log/pacman.log for installed packages (Arch Linux)."""
+    log = Path("/var/log/pacman.log")
+    if not log.exists():
+        return []
+    pat = re.compile(r"^\[(\d{4}-\d{2}-\d{2})T[^\]]+\] \[ALPM\] installed (\S+)")
+    seen: dict[str, dict] = {}
+    for line in log.read_text(errors="replace").splitlines():
+        m = pat.match(line)
+        if not m:
+            continue
+        e = _pkg_entry(m.group(2), m.group(1), exclusions)
+        if e:
+            pkg = e["package"]
+            if pkg not in seen or e["date"] > seen[pkg]["date"]:
+                seen[pkg] = e
+    return list(seen.values())
+
+
+def parse_dnf_history(exclusions: frozenset[str]) -> list[dict]:
+    """Parse dnf/yum log for installed packages (Fedora/RHEL/CentOS)."""
+    for path in ["/var/log/dnf.rpm.log", "/var/log/yum.log"]:
+        log = Path(path)
+        if log.exists():
+            break
+    else:
+        return []
+    # Lines like: "2024-01-15T10:30:00Z SUBDEBUG Installed: vim-enhanced-9.0-1.fc38.x86_64"
+    pat = re.compile(r"^(\d{4}-\d{2}-\d{2})T.+Installed:\s+(\S+)")
+    seen: dict[str, dict] = {}
+    for line in log.read_text(errors="replace").splitlines():
+        m = pat.match(line)
+        if not m:
+            continue
+        date, raw = m.group(1), m.group(2)
+        # RPM NEVRA: name-version-release.arch — name never starts with a digit
+        name_m = re.match(r"^(.+?)-\d", raw) or re.match(r"^(.+?)\.", raw)
+        pkg = name_m.group(1) if name_m else raw
+        e = _pkg_entry(pkg, date, exclusions)
+        if e and (pkg not in seen or date > seen[pkg]["date"]):
+            seen[pkg] = e
+    return list(seen.values())
+
+
+def parse_zypper_history(exclusions: frozenset[str]) -> list[dict]:
+    """Parse /var/log/zypp/history for installed packages (openSUSE)."""
+    log = Path("/var/log/zypp/history")
+    if not log.exists():
+        return []
+    # Pipe-delimited CSV: date|install|name|version|arch|...
+    seen: dict[str, dict] = {}
+    for line in log.read_text(errors="replace").splitlines():
+        if line.startswith("#"):
+            continue
+        parts = line.split("|")
+        if len(parts) < 3 or parts[1].strip() != "install":
+            continue
+        date, pkg = parts[0].strip()[:10], parts[2].strip()
+        e = _pkg_entry(pkg, date, exclusions)
+        if e and (pkg not in seen or date > seen[pkg]["date"]):
+            seen[pkg] = e
+    return list(seen.values())
+
+
+def parse_snap_packages(exclusions: frozenset[str]) -> list[dict]:
+    """List installed snap packages (cross-distro)."""
+    out = _run_cmd(["snap", "list", "--unicode=never"])
+    if not out:
+        return []
+    results = []
+    for line in out.splitlines()[1:]:  # skip header row
+        parts = line.split()
+        e = _pkg_entry(parts[0], "", exclusions) if parts else None
+        if e:
+            results.append(e)
+    return results
+
+
+def parse_flatpak_packages(exclusions: frozenset[str]) -> list[dict]:
+    """List installed flatpak apps (cross-distro). Uses last component of app ID."""
+    out = _run_cmd(["flatpak", "list", "--app", "--columns=application"])
+    if not out:
+        return []
+    results = []
+    for line in out.splitlines():
+        line = line.strip()
+        pkg = line.split(".")[-1] if "." in line else line
+        e = _pkg_entry(pkg, "", exclusions) if pkg else None
+        if e:
+            results.append(e)
+    return results
+
+
+def parse_brew_packages(exclusions: frozenset[str]) -> list[dict]:
+    """List Homebrew formula packages (macOS / Linux)."""
+    out = _run_cmd(["brew", "list", "--formula", "-1"])
+    if not out:
+        return []
+    return [e for line in out.splitlines() if (e := _pkg_entry(line.strip(), "", exclusions))]
+
+
+def collect_packages(exclusions: frozenset[str]) -> list[dict]:
+    """Gather installed packages from all detected package managers, deduped, newest first."""
+    all_entries: list[dict] = []
+    for parser in [
+        parse_apt_history,
+        parse_pacman_history,
+        parse_dnf_history,
+        parse_zypper_history,
+        parse_snap_packages,
+        parse_flatpak_packages,
+        parse_brew_packages,
+    ]:
+        all_entries.extend(parser(exclusions))
+    seen: dict[str, dict] = {}
+    for e in all_entries:
+        pkg = e["package"]
+        if pkg not in seen or e["date"] > seen[pkg]["date"]:
+            seen[pkg] = e
+    return sorted(seen.values(), key=lambda x: x["date"], reverse=True)
+
+
 def parse_zsh_history(tail: int = 400) -> list[str]:
     """Return the last N commands from zsh history."""
     hist = Path.home() / ".zsh_history"
@@ -209,7 +347,7 @@ def build_prompt(packages: list[dict], binaries: list[str], recent: list[str]) -
 
     return f"""I need a reminder cheat sheet of cool terminal tools I've installed but might forget.
 
-MANUALLY INSTALLED PACKAGES (newest first):
+INSTALLED PACKAGES (newest first, across all package managers):
 {pkg_text}
 
 UNIQUE BINARIES FROM MY RECENT ZSH HISTORY:
@@ -365,8 +503,8 @@ def main() -> None:
 
     exclusions = load_exclusions()
 
-    print("→ Parsing apt history...", file=sys.stderr)
-    packages = parse_apt_history(exclusions)
+    print("→ Parsing package manager history...", file=sys.stderr)
+    packages = collect_packages(exclusions)
 
     print("→ Parsing zsh history...", file=sys.stderr)
     history = parse_zsh_history()
